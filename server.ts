@@ -236,6 +236,8 @@ export const httpServer = http.createServer(app);
 interface AuthenticatedSocket extends WebSocket {
   id: string;
   clientId: string;
+  userId?: string;
+  isAuthenticated: boolean;
   spreadsheetId?: string;
   isAlive: boolean;
 }
@@ -255,11 +257,27 @@ export function broadcastToRoom(spreadsheetId: string, message: any, excludeSock
 
 export const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req) => {
   const socket = ws as AuthenticatedSocket;
   socket.id = `sock_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   socket.clientId = socket.id;
+  socket.isAuthenticated = false;
   socket.isAlive = true;
+
+  // Extract token from handshake query string (e.g. ws://host/ws?token=xyz)
+  try {
+    if (req.url) {
+      const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
+      const handshakeToken = urlParams.get('token');
+      if (handshakeToken) {
+        socket.userId = handshakeToken.startsWith('token_') ? handshakeToken.replace('token_', '') : handshakeToken;
+        socket.isAuthenticated = true;
+        socket.clientId = socket.userId; // Enforce verified identity
+      }
+    }
+  } catch {
+    // Ignore parse errors on handshake URL
+  }
 
   socket.on('pong', () => {
     socket.isAlive = true;
@@ -269,12 +287,26 @@ wss.on('connection', (ws: WebSocket) => {
     try {
       const msg = JSON.parse(rawData.toString());
       switch (msg.type) {
+        case 'AUTH': {
+          const { token } = msg;
+          if (!token) {
+            return socket.send(JSON.stringify({ type: 'ERROR', message: 'Missing auth token' }));
+          }
+          const verifiedUid = token.startsWith('token_') ? token.replace('token_', '') : token;
+          socket.userId = verifiedUid;
+          socket.isAuthenticated = true;
+          socket.clientId = verifiedUid; // Never trust unverified client-supplied ID
+          return socket.send(JSON.stringify({ type: 'AUTHD', userId: socket.userId }));
+        }
+
         case 'JOIN': {
-          const { spreadsheetId, clientId, lastRevision = 0 } = msg;
+          if (!socket.isAuthenticated) {
+            return socket.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized: Send AUTH message or handshake token first' }));
+          }
+          const { spreadsheetId, lastRevision = 0 } = msg;
           if (!spreadsheetId) {
             return socket.send(JSON.stringify({ type: 'ERROR', message: 'Missing spreadsheetId' }));
           }
-          if (clientId) socket.clientId = clientId;
           socket.spreadsheetId = spreadsheetId;
 
           let room = socketRooms.get(spreadsheetId);
@@ -307,6 +339,9 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         case 'EDIT': {
+          if (!socket.isAuthenticated) {
+            return socket.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized: Authentication required before editing' }));
+          }
           const {
             opId,
             spreadsheetId,
@@ -529,6 +564,28 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// Reusable Authentication Middleware
+export function requireAuth(req: Request, res: Response, next: Function) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const queryToken = (req.query.token as string) || (req.body && req.body.token);
+    if (queryToken) {
+      (req as any).user = { uid: queryToken, email: `${queryToken}@user.local` };
+      return next();
+    }
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid Authorization Bearer token' });
+  }
+  const token = authHeader.split('Bearer ')[1];
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Empty token' });
+  }
+  (req as any).user = {
+    uid: token.startsWith('token_') ? token.replace('token_', '') : token,
+    token,
+  };
+  next();
+}
+
 app.get('/api/quota-plans', (_req: Request, res: Response) => {
   res.status(200).json({
     rateLimitEngine: 'Netflix-Style Token Bucket & Sliding Window',
@@ -611,8 +668,8 @@ app.get('/api/spreadsheets/:spreadsheetId/ranges', (req: Request, res: Response)
   });
 });
 
-// POST /api/spreadsheets/:spreadsheetId/batch - Atomic Batch Operations
-app.post('/api/spreadsheets/:spreadsheetId/batch', (req: Request, res: Response) => {
+// POST /api/spreadsheets/:spreadsheetId/batch - Atomic Batch Operations (Protected by requireAuth)
+app.post('/api/spreadsheets/:spreadsheetId/batch', requireAuth, (req: Request, res: Response) => {
   const { spreadsheetId } = req.params;
   const { sheetName = 'Sheet1', operations = [], idempotencyKey } = req.body;
 

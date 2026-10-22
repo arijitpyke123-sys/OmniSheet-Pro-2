@@ -2,42 +2,61 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Helper functions for auth and spreadsheet permissions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(resourceData) {
+      return isAuthenticated() && resourceData.ownerId == request.auth.uid;
+    }
+
+    function isCollaborator(spreadsheetData) {
+      return isAuthenticated() && (
+        spreadsheetData.ownerId == request.auth.uid ||
+        (spreadsheetData.collaborators is list && request.auth.uid in spreadsheetData.collaborators)
+      );
+    }
+
     match /test/{docId} {
       allow read, write: if true;
     }
 
     // Registered users for collaborator discovery & profile
     match /users/{userId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
     }
 
     // Spreadsheets collection and all nested subcollections
     match /spreadsheets/{spreadsheetId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if isAuthenticated();
 
       match /data/{dataId} {
-        allow read, write: if true;
+        allow read, write: if isAuthenticated();
       }
 
       match /collaborators/{collabId} {
-        allow read, write: if true;
+        allow read, write: if isAuthenticated();
       }
 
       match /auditLogs/{logId} {
-        allow read, write: if true;
+        allow read, write: if isAuthenticated();
       }
 
       match /{subcollection=**} {
-        allow read, write: if true;
+        allow read, write: if isAuthenticated();
       }
     }
 
     // Tenant quotas and subscription plans
     match /tenants/{tenantId} {
-      allow read, write: if true;
+      allow read, write: if isAuthenticated();
 
       match /{subcollection=**} {
-        allow read, write: if true;
+        allow read, write: if isAuthenticated();
       }
     }
 
