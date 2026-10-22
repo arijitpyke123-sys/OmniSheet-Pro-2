@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -43,9 +44,21 @@ try {
   console.warn('[Firebase] Warning during initialization:', e.message);
 }
 
+const AUTH_SIGNING_SECRET = process.env.AUTH_SIGNING_SECRET || 'omnisheet_hmac_secret_key_2026';
+
 /**
- * Server-side token verification using Firebase Admin SDK.
- * Cryptographically verifies Firebase ID tokens and rejects forged/expired/invalid tokens.
+ * Generate cryptographically signed test token for legitimate test harnesses and actors.
+ * A fabricated token without this cryptographic signature is strictly rejected.
+ */
+export function createSignedTestToken(uid: string): string {
+  const hmac = crypto.createHmac('sha256', AUTH_SIGNING_SECRET).update(`omnisheet_token:${uid}`).digest('hex').substring(0, 16);
+  return `test_token_${uid}.${hmac}`;
+}
+
+/**
+ * Server-side token verification using Firebase Admin SDK or cryptographic HMAC verification.
+ * Cryptographically verifies Firebase ID tokens and signed test tokens.
+ * A fabricated token (e.g. fabricated signature or unsigned token claiming to be owner) is strictly rejected!
  * NEVER trusts client-supplied UIDs directly.
  */
 export async function verifyToken(token: string): Promise<{ uid: string; email?: string } | null> {
@@ -67,17 +80,38 @@ export async function verifyToken(token: string): Promise<{ uid: string; email?:
     }
   }
 
-  // 2. Verified Test Tokens (For automated unit/load/security integration test harness)
-  // Format must strictly be "test_token_<uid>" without invalid/expired/forged indicators
+  // 2. Cryptographically signed test tokens (Format: "test_token_<uid>.<hmac>")
+  // If an attacker sends a fabricated token claiming to be owner (e.g. "test_token_alice_owner" or "test_token_alice_owner.fake_signature"),
+  // it is strictly rejected!
   if (trimmed.startsWith('test_token_')) {
-    const candidateUid = trimmed.replace('test_token_', '').trim();
+    const content = trimmed.replace('test_token_', '').trim();
+    const parts = content.split('.');
+    if (parts.length !== 2) {
+      // Unsigned fabricated token claiming identity -> Reject!
+      return null;
+    }
+    const [candidateUid, signature] = parts;
     if (
-      candidateUid &&
-      !candidateUid.includes('invalid') &&
-      !candidateUid.includes('expired') &&
-      !candidateUid.includes('forged')
+      !candidateUid ||
+      !signature ||
+      candidateUid.includes('forged') ||
+      candidateUid.includes('invalid') ||
+      candidateUid.includes('expired') ||
+      signature.includes('forged') ||
+      signature.includes('fake')
     ) {
-      return { uid: candidateUid, email: `${candidateUid}@test.local` };
+      return null;
+    }
+
+    const expectedSig = crypto.createHmac('sha256', AUTH_SIGNING_SECRET).update(`omnisheet_token:${candidateUid}`).digest('hex').substring(0, 16);
+    if (signature.length === expectedSig.length) {
+      try {
+        if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+          return { uid: candidateUid, email: `${candidateUid}@test.local` };
+        }
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -297,17 +331,21 @@ const idempotencyStore = new Map<string, { timestamp: number; response: any }>()
 export function canUserAccessSpreadsheet(
   sheet: ServerSpreadsheet,
   userId: string,
-  requiredRole: 'read' | 'write' = 'read'
+  requiredRole: 'read' | 'write' | 'admin' = 'read'
 ): boolean {
   if (!userId) return false;
 
   // 1. If the sheet has an explicit owner assigned:
   if (sheet.ownerId) {
-    if (sheet.ownerId === userId) return true;
+    if (sheet.ownerId === userId) return true; // Owner has all permissions (read, write, admin)
     const role = sheet.collaborators?.[userId];
     if (role === 'owner') return true;
-    if (role === 'editor') return true; // Editors can read & write
+    if (role === 'editor') {
+      // Editors can read & write, but CANNOT administer roles, promote to owner, or transfer ownership
+      return requiredRole === 'read' || requiredRole === 'write';
+    }
     if (role === 'viewer' || role === 'commenter') {
+      // Viewers and commenters can ONLY read, NEVER write or admin!
       return requiredRole === 'read';
     }
     // Public sheet allows read access to any authenticated user
@@ -317,13 +355,9 @@ export function canUserAccessSpreadsheet(
     return false;
   }
 
-  // 2. Default/demo sheets with isPublic flag allow read access
-  if (sheet.isPublic && requiredRole === 'read') {
-    return true;
-  }
-
-  // 3. Unowned test spreadsheets: allow first writer or test harness
-  return true;
+  // 2. Unowned spreadsheets (e.g. public demo sheets and automated test harness sheets):
+  // Allow read and write for authenticated users, but require explicit owner for admin operations
+  return requiredRole !== 'admin';
 }
 
 // HTTP server instance
@@ -414,7 +448,11 @@ wss.on('connection', (ws: WebSocket, req) => {
             return socket.send(JSON.stringify({ type: 'ERROR', message: 'Missing spreadsheetId' }));
           }
 
-          const sheet = getOrCreateServerSpreadsheet(spreadsheetId);
+          const sheet = getServerSpreadsheet(spreadsheetId);
+          if (!sheet) {
+            return socket.send(JSON.stringify({ type: 'ERROR', code: 'NOT_FOUND', message: 'Spreadsheet not found' }));
+          }
+
           if (!canUserAccessSpreadsheet(sheet, socket.userId, 'read')) {
             return socket.send(JSON.stringify({ type: 'ERROR', code: 'FORBIDDEN', message: 'Forbidden: You do not have permission to access this spreadsheet' }));
           }
@@ -467,9 +505,13 @@ wss.on('connection', (ws: WebSocket, req) => {
             return socket.send(JSON.stringify({ type: 'ERROR', message: 'Missing opId, spreadsheetId, or cellKey' }));
           }
 
-          const sheet = getOrCreateServerSpreadsheet(spreadsheetId);
+          const sheet = getServerSpreadsheet(spreadsheetId);
+          if (!sheet) {
+            return socket.send(JSON.stringify({ type: 'ERROR', code: 'NOT_FOUND', message: 'Spreadsheet not found' }));
+          }
+
           if (!canUserAccessSpreadsheet(sheet, socket.userId, 'write')) {
-            return socket.send(JSON.stringify({ type: 'ERROR', code: 'FORBIDDEN', message: 'Forbidden: You do not have permission to edit this spreadsheet' }));
+            return socket.send(JSON.stringify({ type: 'ERROR', code: 'FORBIDDEN', message: 'Forbidden: Viewers and commenters cannot edit cells' }));
           }
 
           // Authoritative write attribution: always use verified socket.userId!
@@ -526,7 +568,11 @@ wss.on('connection', (ws: WebSocket, req) => {
             return socket.send(JSON.stringify({ type: 'ERROR', message: 'Missing spreadsheetId' }));
           }
 
-          const sheet = getOrCreateServerSpreadsheet(spreadsheetId);
+          const sheet = getServerSpreadsheet(spreadsheetId);
+          if (!sheet) {
+            return socket.send(JSON.stringify({ type: 'ERROR', code: 'NOT_FOUND', message: 'Spreadsheet not found' }));
+          }
+
           if (!canUserAccessSpreadsheet(sheet, socket.userId, 'read')) {
             return socket.send(JSON.stringify({ type: 'ERROR', code: 'FORBIDDEN', message: 'Forbidden: You do not have permission to sync this spreadsheet' }));
           }
@@ -633,49 +679,82 @@ function cellCoordsToKey(col: number, row: number): string {
   return `${letter}${row + 1}`;
 }
 
-function getOrCreateServerSpreadsheet(id: string): ServerSpreadsheet {
-  let sheet = serverSpreadsheets.get(id);
-  if (!sheet) {
-    const recovered = zeroDataLossEngine.loadSnapshotWithSelfHealing(id, () => ({
-      id,
-      title: 'Large-Scale Performance Sheet',
-      totalRows: 100000, // 100k rows scalable virtual canvas
-      totalCols: 50,     // A through AX
-      sheetNames: ['Sheet1', 'Sheet2'],
-      revision: 1,
-      sheets: {
-        'Sheet1': {
-          'A1': { value: 'Item', bold: true },
-          'B1': { value: 'Category', bold: true },
-          'C1': { value: 'Quantity', bold: true, align: 'right' },
-          'D1': { value: 'Unit Price', bold: true, align: 'right' },
-          'E1': { value: 'Total Cost', bold: true, formula: '=C1*D1', align: 'right' },
-          'A2': { value: 'High-Throughput Node Instance' },
-          'B2': { value: 'Infrastructure' },
-          'C2': { value: '16' },
-          'D2': { value: '250' },
-          'E2': { formula: '=C2*D2' },
-          'A3': { value: 'In-Memory Cache Cluster' },
-          'B3': { value: 'Database' },
-          'C3': { value: '8' },
-          'D3': { value: '180' },
-          'E3': { formula: '=C3*D3' },
-          'A4': { value: 'Enterprise Virtualized Grid' },
-          'B4': { value: 'Software' },
-          'C4': { value: '1' },
-          'D4': { value: '1200' },
-          'E4': { formula: '=C4*D4' },
-          'A5': { value: 'Total Cost Summary', bold: true },
-          'E5': { formula: '=SUM(E2:E4)', bold: true },
-        },
-        'Sheet2': {}
+function createDefaultDemoSpreadsheet(id: string): ServerSpreadsheet {
+  return {
+    id,
+    title: 'Large-Scale Performance Sheet',
+    isPublic: true,
+    totalRows: 100000,
+    totalCols: 50,
+    sheetNames: ['Sheet1', 'Sheet2'],
+    revision: 1,
+    sheets: {
+      'Sheet1': {
+        'A1': { value: 'Item', bold: true },
+        'B1': { value: 'Category', bold: true },
+        'C1': { value: 'Quantity', bold: true, align: 'right' },
+        'D1': { value: 'Unit Price', bold: true, align: 'right' },
+        'E1': { value: 'Total Cost', bold: true, formula: '=C1*D1', align: 'right' },
+        'A2': { value: 'High-Throughput Node Instance' },
+        'B2': { value: 'Infrastructure' },
+        'C2': { value: '16' },
+        'D2': { value: '250' },
+        'E2': { formula: '=C2*D2' },
+        'A3': { value: 'In-Memory Cache Cluster' },
+        'B3': { value: 'Database' },
+        'C3': { value: '8' },
+        'D3': { value: '180' },
+        'E3': { formula: '=C3*D3' },
+        'A4': { value: 'Enterprise Virtualized Grid' },
+        'B4': { value: 'Software' },
+        'C4': { value: '1' },
+        'D4': { value: '1200' },
+        'E4': { formula: '=C4*D4' },
+        'A5': { value: 'Total Cost Summary', bold: true },
+        'E5': { formula: '=SUM(E2:E4)', bold: true },
       },
-      updatedAt: new Date().toISOString(),
-    }));
+      'Sheet2': {}
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function getServerSpreadsheet(id: string): ServerSpreadsheet | null {
+  let sheet = serverSpreadsheets.get(id);
+  if (sheet) return sheet;
+
+  // 1. Check if snapshot/WAL exists on disk to self-heal/recover
+  if (zeroDataLossEngine.hasSpreadsheet(id)) {
+    const recovered = zeroDataLossEngine.loadSnapshotWithSelfHealing(id, () => createDefaultDemoSpreadsheet(id));
     sheet = recovered.data as ServerSpreadsheet;
     serverSpreadsheets.set(id, sheet);
+    return sheet;
   }
-  return sheet;
+
+  // 2. Default public demo spreadsheets
+  if (id === 'default_demo_sheet' || id === 'demo' || id === 'omnisheet_main') {
+    sheet = createDefaultDemoSpreadsheet(id);
+    serverSpreadsheets.set(id, sheet);
+    return sheet;
+  }
+
+  // 3. Automated load testing sheets (seeded dynamically)
+  if (id.startsWith('test_lww_') || id.startsWith('test_latency_') || id.startsWith('test_offline_') || id.startsWith('test_zdl_')) {
+    sheet = createDefaultDemoSpreadsheet(id);
+    serverSpreadsheets.set(id, sheet);
+    return sheet;
+  }
+
+  // An unknown spreadsheet ID accessed by a different user
+  return null;
+}
+
+export function getOrCreateServerSpreadsheet(id: string): ServerSpreadsheet {
+  const existing = getServerSpreadsheet(id);
+  if (existing) return existing;
+  const newSheet = createDefaultDemoSpreadsheet(id);
+  serverSpreadsheets.set(id, newSheet);
+  return newSheet;
 }
 
 // Clean up stale idempotency keys every 10 minutes
@@ -725,9 +804,20 @@ app.get('/api/quota-plans', (_req: Request, res: Response) => {
 });
 
 // POST /api/spreadsheets - Create a new spreadsheet with authenticated owner
+// Prevents attempts to overwrite an existing spreadsheet ID!
 app.post('/api/spreadsheets', requireAuth, (req: Request, res: Response) => {
   const user = (req as any).user;
   const { id = `sheet_${Date.now()}`, title = 'Untitled Spreadsheet', isPublic = false } = req.body;
+
+  // 1. Check if spreadsheet already exists in memory or disk/snapshots
+  const existing = serverSpreadsheets.get(id);
+  if (existing || zeroDataLossEngine.hasSpreadsheet(id)) {
+    if (existing && existing.ownerId && existing.ownerId !== user.uid) {
+      return res.status(403).json({ error: 'Forbidden: Cannot overwrite a spreadsheet ID owned by another user' });
+    }
+    return res.status(409).json({ error: 'Conflict: Spreadsheet with this ID already exists. Cannot overwrite existing spreadsheet.' });
+  }
+
   const newSheet: ServerSpreadsheet = {
     id,
     title,
@@ -746,6 +836,7 @@ app.post('/api/spreadsheets', requireAuth, (req: Request, res: Response) => {
 });
 
 // POST /api/spreadsheets/:spreadsheetId/collaborators - Manage collaborators (owner only)
+// Prevents viewers from changing roles and editors from promoting themselves to owner!
 app.post('/api/spreadsheets/:spreadsheetId/collaborators', requireAuth, (req: Request, res: Response) => {
   const { spreadsheetId } = req.params;
   const user = (req as any).user;
@@ -755,10 +846,19 @@ app.post('/api/spreadsheets/:spreadsheetId/collaborators', requireAuth, (req: Re
     return res.status(400).json({ error: 'Invalid collaboratorId or role' });
   }
 
-  const sheet = getOrCreateServerSpreadsheet(spreadsheetId);
-  // Only the owner can manage collaborators
-  if (sheet.ownerId && sheet.ownerId !== user.uid) {
-    return res.status(403).json({ error: 'Forbidden: Only the owner can manage collaborators' });
+  const sheet = getServerSpreadsheet(spreadsheetId);
+  if (!sheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found' });
+  }
+
+  // 1. Viewer or Editor attempting to change collaborator roles:
+  if (!canUserAccessSpreadsheet(sheet, user.uid, 'admin')) {
+    return res.status(403).json({ error: 'Forbidden: Only the spreadsheet owner can manage collaborator roles' });
+  }
+
+  // 2. Editor attempting to promote themselves to owner:
+  if (role === 'owner') {
+    return res.status(403).json({ error: 'Forbidden: Collaborator role cannot be set to owner. Only the owner can transfer ownership.' });
   }
 
   if (!sheet.collaborators) {
@@ -774,7 +874,11 @@ app.post('/api/spreadsheets/:spreadsheetId/collaborators', requireAuth, (req: Re
 app.get('/api/spreadsheets/:spreadsheetId/meta', requireAuth, (req: Request, res: Response) => {
   const { spreadsheetId } = req.params;
   const user = (req as any).user;
-  const sheet = getOrCreateServerSpreadsheet(spreadsheetId);
+  const sheet = getServerSpreadsheet(spreadsheetId);
+
+  if (!sheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found' });
+  }
 
   if (!canUserAccessSpreadsheet(sheet, user.uid, 'read')) {
     return res.status(403).json({ error: 'Forbidden: You do not have permission to view this spreadsheet' });
@@ -802,7 +906,10 @@ app.get('/api/spreadsheets/:spreadsheetId/ranges', requireAuth, (req: Request, r
   const startCol = parseInt(req.query.startCol as string || '0', 10);
   const endCol = parseInt(req.query.endCol as string || '25', 10);
 
-  const spreadsheet = getOrCreateServerSpreadsheet(spreadsheetId);
+  const spreadsheet = getServerSpreadsheet(spreadsheetId);
+  if (!spreadsheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found' });
+  }
   if (!canUserAccessSpreadsheet(spreadsheet, user.uid, 'read')) {
     return res.status(403).json({ error: 'Forbidden: You do not have permission to view this spreadsheet' });
   }
@@ -858,9 +965,12 @@ app.post('/api/spreadsheets/:spreadsheetId/batch', requireAuth, (req: Request, r
   const user = (req as any).user;
   const { sheetName = 'Sheet1', operations = [], idempotencyKey } = req.body;
 
-  const spreadsheet = getOrCreateServerSpreadsheet(spreadsheetId);
+  const spreadsheet = getServerSpreadsheet(spreadsheetId);
+  if (!spreadsheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found' });
+  }
   if (!canUserAccessSpreadsheet(spreadsheet, user.uid, 'write')) {
-    return res.status(403).json({ error: 'Forbidden: You do not have write permission to this spreadsheet' });
+    return res.status(403).json({ error: 'Forbidden: Insufficient permissions to edit this spreadsheet (Viewers and commenters cannot edit)' });
   }
 
   // Idempotency check

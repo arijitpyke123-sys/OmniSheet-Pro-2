@@ -489,6 +489,15 @@ export class ZeroDataLossEngine {
   }
 
   /**
+   * Check if a spreadsheet has persisted records on disk or in active memory
+   */
+  public hasSpreadsheet(spreadsheetId: string): boolean {
+    const snapPath = this.getSnapshotFilePath(spreadsheetId);
+    const walPath = this.getOpLogFilePath(spreadsheetId);
+    return fs.existsSync(snapPath) || fs.existsSync(walPath) || this.sheetOpLogs.has(spreadsheetId);
+  }
+
+  /**
    * Inspect Engine Stats
    */
   public getEngineStats(): EngineStats {

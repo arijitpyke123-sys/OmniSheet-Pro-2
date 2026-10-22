@@ -22,6 +22,32 @@ service cloud.firestore {
       );
     }
 
+    function getParentSpreadsheet(spreadsheetId) {
+      return get(/databases/$(database)/documents/spreadsheets/$(spreadsheetId)).data;
+    }
+
+    function canReadParentSpreadsheet(spreadsheetId) {
+      return isAuthenticated() && (
+        getParentSpreadsheet(spreadsheetId).isPublic == true ||
+        isCollaborator(getParentSpreadsheet(spreadsheetId))
+      );
+    }
+
+    function canWriteParentSpreadsheet(spreadsheetId) {
+      return isAuthenticated() && (
+        getParentSpreadsheet(spreadsheetId).ownerId == request.auth.uid ||
+        (getParentSpreadsheet(spreadsheetId).collaborators is map &&
+         (getParentSpreadsheet(spreadsheetId).collaborators[request.auth.uid] == 'owner' ||
+          getParentSpreadsheet(spreadsheetId).collaborators[request.auth.uid] == 'editor')) ||
+        (getParentSpreadsheet(spreadsheetId).collaborators is list &&
+         request.auth.uid in getParentSpreadsheet(spreadsheetId).collaborators)
+      );
+    }
+
+    function isParentSpreadsheetOwner(spreadsheetId) {
+      return isAuthenticated() && getParentSpreadsheet(spreadsheetId).ownerId == request.auth.uid;
+    }
+
     // Registered users for collaborator discovery & profile
     match /users/{userId} {
       allow read: if isAuthenticated();
@@ -30,43 +56,57 @@ service cloud.firestore {
 
     // Spreadsheets collection and all nested subcollections
     match /spreadsheets/{spreadsheetId} {
-      // Must be authenticated and either owner, collaborator, or public
+      // 1. Read: Must be authenticated and either owner, collaborator, or public
       allow read: if isAuthenticated() && (
         resource == null ||
         resource.data.isPublic == true ||
         isCollaborator(resource.data)
       );
       
-      // Must set oneself as owner on creation
-      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      // 2. Create: Must set oneself as owner on creation AND spreadsheet document must not already exist
+      // Prevents attempts to overwrite an existing spreadsheet ID!
+      allow create: if isAuthenticated() && 
+                    request.resource.data.ownerId == request.auth.uid &&
+                    !exists(/databases/$(database)/documents/spreadsheets/$(spreadsheetId));
       
-      // Must be owner or editor collaborator to update
+      // 3. Update: 
+      // - Must be owner or editor collaborator
+      // - Prevents an editor from promoting themselves to owner or changing the ownerId!
       allow update: if isAuthenticated() && (
-        isOwner(resource.data) ||
-        isCollaborator(resource.data)
+        (isOwner(resource.data)) ||
+        (isCollaborator(resource.data) && request.resource.data.ownerId == resource.data.ownerId)
       );
       
-      // Only owner can delete spreadsheet
+      // 4. Delete: Only owner can delete spreadsheet
       allow delete: if isAuthenticated() && isOwner(resource.data);
 
+      // Direct Firestore access to nested Cell Data Subcollection
+      // Prevents direct reads and writes against another user's spreadsheet!
+      // Prevents a viewer from attempting to edit cells!
       match /data/{dataId} {
-        allow read: if isAuthenticated();
-        allow write: if isAuthenticated();
+        allow read: if canReadParentSpreadsheet(spreadsheetId);
+        allow write: if canWriteParentSpreadsheet(spreadsheetId);
       }
 
+      // Collaborators Subcollection
+      // Prevents a viewer or editor from changing collaborator roles or promoting to owner!
       match /collaborators/{collabId} {
-        allow read: if isAuthenticated();
-        allow write: if isAuthenticated();
+        allow read: if canReadParentSpreadsheet(spreadsheetId);
+        allow write: if isParentSpreadsheetOwner(spreadsheetId) && 
+                     request.resource.data.role != 'owner';
       }
 
+      // Audit Logs Subcollection (Append-only)
       match /auditLogs/{logId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated();
-        allow update, delete: if false; // Append-only audit logs
+        allow read: if canReadParentSpreadsheet(spreadsheetId);
+        allow create: if canWriteParentSpreadsheet(spreadsheetId);
+        allow update, delete: if false;
       }
 
+      // All other nested subcollections
       match /{subcollection=**} {
-        allow read, write: if isAuthenticated();
+        allow read: if canReadParentSpreadsheet(spreadsheetId);
+        allow write: if canWriteParentSpreadsheet(spreadsheetId);
       }
     }
 

@@ -1,5 +1,13 @@
 import { WebSocket } from 'ws';
 import http from 'http';
+import crypto from 'crypto';
+
+const AUTH_SIGNING_SECRET = process.env.AUTH_SIGNING_SECRET || 'omnisheet_hmac_secret_key_2026';
+
+export function createSignedTestToken(uid: string): string {
+  const hmac = crypto.createHmac('sha256', AUTH_SIGNING_SECRET).update(`omnisheet_token:${uid}`).digest('hex').substring(0, 16);
+  return `test_token_${uid}.${hmac}`;
+}
 
 export interface TestResult {
   id: string;
@@ -27,7 +35,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function httpGet(url: string, token = 'test_token_admin_runner'): Promise<any> {
+function httpGet(url: string, token = createSignedTestToken('admin_runner')): Promise<any> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const req = http.request({
@@ -54,7 +62,7 @@ function httpGet(url: string, token = 'test_token_admin_runner'): Promise<any> {
   });
 }
 
-function httpPost(url: string, body: any, token = 'test_token_admin_runner'): Promise<any> {
+function httpPost(url: string, body: any, token = createSignedTestToken('admin_runner')): Promise<any> {
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify(body);
     const parsed = new URL(url);
@@ -101,7 +109,7 @@ class TestClient {
   constructor(id: string, spreadsheetId: string, wsUrl: string, artificialDelayMs = 0, token?: string) {
     this.id = id;
     this.spreadsheetId = spreadsheetId;
-    this.token = token || `test_token_${id}`;
+    this.token = token || createSignedTestToken(id);
     const separator = wsUrl.includes('?') ? '&' : '?';
     this.wsUrl = `${wsUrl}${separator}token=${this.token}`;
     this.artificialDelayMs = artificialDelayMs;
@@ -118,21 +126,27 @@ class TestClient {
           type: 'AUTH',
           token: this.token,
         }));
-        this.ws!.send(JSON.stringify({
-          type: 'JOIN',
-          spreadsheetId: this.spreadsheetId,
-          clientId: this.id,
-          lastRevision: this.currentRevision,
-        }));
       });
 
       this.ws.on('message', (raw) => {
         try {
           const msg = JSON.parse(raw.toString());
-          if (msg.type === 'JOINED') {
+          if (msg.type === 'AUTHD') {
+            // Once cryptographically authenticated, join room
+            this.ws!.send(JSON.stringify({
+              type: 'JOIN',
+              spreadsheetId: this.spreadsheetId,
+              clientId: this.id,
+              lastRevision: this.currentRevision,
+            }));
+          } else if (msg.type === 'JOINED') {
             this.currentRevision = msg.revision || 0;
             this.localCells = { ...msg.cells };
             resolve();
+          } else if (msg.type === 'ERROR') {
+            if (!this.isConnected || this.currentRevision === 0) {
+              reject(new Error(msg.message || msg.code || 'WebSocket error'));
+            }
           } else if (msg.type === 'ACK') {
             if (msg.revision > this.currentRevision) {
               this.currentRevision = msg.revision;
@@ -195,7 +209,26 @@ class TestClient {
     }
 
     return new Promise((resolve) => {
-      this.pendingAcks.set(opId, resolve);
+      const timer = setTimeout(() => {
+        if (this.pendingAcks.has(opId)) {
+          this.pendingAcks.delete(opId);
+          resolve({
+            clientId: this.id,
+            opId,
+            clientTimestamp,
+            serverTimestamp: 0,
+            revision: this.currentRevision,
+            cellKey,
+            cellValue,
+            status: 'TIMEOUT',
+          });
+        }
+      }, 4000);
+
+      this.pendingAcks.set(opId, (ack) => {
+        clearTimeout(timer);
+        resolve(ack);
+      });
       this.ws!.send(JSON.stringify({
         type: 'EDIT',
         opId,
