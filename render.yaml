@@ -1,0 +1,48 @@
+# Render Blueprint Specification
+# Documentation: https://render.com/docs/blueprint-spec
+
+services:
+  # -------------------------------------------------------------
+  # Production Static Site (Recommended: 100% Free tier, Global CDN, No sleep)
+  # -------------------------------------------------------------
+  - type: web
+    name: omni-sheet-pro
+    runtime: static
+    buildCommand: npm run build
+    staticPublishPath: ./dist
+    routes:
+      # SPA rewrite rule so React Router / client routes load index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+
+  # -------------------------------------------------------------
+  # Production Node.js Web Service (Express Server + Health Check)
+  # -------------------------------------------------------------
+  - type: web
+    name: omni-sheet-pro-api
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000

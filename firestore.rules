@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Registered users for collaborator discovery & profile
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Spreadsheets collection and all nested subcollections
+    match /spreadsheets/{spreadsheetId} {
+      allow read, write: if true;
+
+      match /data/{dataId} {
+        allow read, write: if true;
+      }
+
+      match /collaborators/{collabId} {
+        allow read, write: if true;
+      }
+
+      match /auditLogs/{logId} {
+        allow read, write: if true;
+      }
+
+      match /{subcollection=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Tenant quotas and subscription plans
+    match /tenants/{tenantId} {
+      allow read, write: if true;
+
+      match /{subcollection=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Global default deny for other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

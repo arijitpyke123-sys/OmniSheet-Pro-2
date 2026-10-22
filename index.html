@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OmniSheet Pro - Collaborative Cloud Spreadsheet</title>
+    <meta name="description" content="Collaborative cloud spreadsheet with real-time multi-user editing, per-tenant rate-limiting quotas, formula engine, charts, and Firestore cloud synchronization." />
+    <meta property="og:title" content="OmniSheet Pro - Collaborative Cloud Spreadsheet" />
+    <meta property="og:description" content="Collaborative cloud spreadsheet with real-time multi-user editing, per-tenant rate-limiting quotas, formula engine, charts, and Firestore cloud synchronization." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        // Intercept Vite HMR WebSocket so it never opens or fails in the sandbox/Cloud Run preview
+        const OriginalWebSocket = window.WebSocket;
+        if (OriginalWebSocket) {
+          const PatchedWebSocket = function(url, protocols) {
+            const isViteHmr = 
+              protocols === 'vite-hmr' || 
+              (Array.isArray(protocols) && protocols.includes('vite-hmr')) ||
+              (typeof url === 'string' && (url.includes('vite-hmr') || url.includes('/@vite')));
+
+            if (isViteHmr) {
+              return {
+                url: String(url),
+                readyState: 3, // CLOSED
+                protocol: 'vite-hmr',
+                bufferedAmount: 0,
+                extensions: '',
+                binaryType: 'blob',
+                onopen: null,
+                onclose: null,
+                onerror: null,
+                onmessage: null,
+                send: function() {},
+                close: function() {},
+                addEventListener: function() {},
+                removeEventListener: function() {},
+                dispatchEvent: function() { return false; },
+              };
+            }
+            return new OriginalWebSocket(url, protocols);
+          };
+
+          PatchedWebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+          PatchedWebSocket.OPEN = OriginalWebSocket.OPEN;
+          PatchedWebSocket.CLOSING = OriginalWebSocket.CLOSING;
+          PatchedWebSocket.CLOSED = OriginalWebSocket.CLOSED;
+          PatchedWebSocket.prototype = OriginalWebSocket.prototype;
+          window.WebSocket = PatchedWebSocket;
+        }
+
+        // Suppress any existing or cached Vite HMR WebSocket errors
+        window.addEventListener('error', function(e) {
+          const msg = e && e.message ? String(e.message) : '';
+          if (msg.includes('WebSocket') || msg.includes('vite-hmr') || msg.includes('ws://') || msg.includes('wss://')) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(e) {
+          const reason = e && e.reason ? String(e.reason.message || e.reason) : '';
+          if (reason.includes('WebSocket') || reason.includes('vite-hmr') || reason.includes('ws://') || reason.includes('wss://')) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,6 @@
+{
+  "name": "OmniSheet Pro",
+  "description": "Collaborative cloud spreadsheet with real-time multi-user editing, per-tenant rate-limiting quotas, formula engine, charts, and Firestore cloud synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "Spreadsheet": {
+      "title": "Spreadsheet",
+      "description": "Spreadsheet document containing sheets, metadata, and permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Spreadsheet ID" },
+        "title": { "type": "string", "maxLength": 200, "description": "Document title" },
+        "ownerId": { "type": "string", "description": "User UID of owner" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "isPublic": { "type": "boolean" }
+      },
+      "required": ["id", "title", "ownerId", "createdAt", "updatedAt"]
+    },
+    "SheetData": {
+      "title": "SheetData",
+      "description": "Cell data and layout for a spreadsheet",
+      "type": "object",
+      "properties": {
+        "spreadsheetId": { "type": "string" },
+        "sheets": { "type": "string", "description": "JSON string of sheets and cells" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["spreadsheetId", "sheets"]
+    },
+    "Collaborator": {
+      "title": "Collaborator",
+      "description": "Access control and roles for users on a spreadsheet",
+      "type": "object",
+      "properties": {
+        "spreadsheetId": { "type": "string" },
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["owner", "editor", "commenter", "viewer"] }
+      },
+      "required": ["spreadsheetId", "userId", "email", "role"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Version history and audit logs",
+      "type": "object",
+      "properties": {
+        "spreadsheetId": { "type": "string" },
+        "userId": { "type": "string" },
+        "action": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["spreadsheetId", "userId", "action", "timestamp"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile for collaborator discovery and invitations",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User UID" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "Full name or display name" },
+        "photoURL": { "type": "string", "description": "Avatar URL" },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "Registered user profiles for collaborator discovery and sharing"
+    },
+    "/spreadsheets/{spreadsheetId}": {
+      "schema": { "$ref": "Spreadsheet" },
+      "description": "Spreadsheet documents"
+    },
+    "/spreadsheets/{spreadsheetId}/data/{dataId}": {
+      "schema": { "$ref": "SheetData" },
+      "description": "Cell contents and sheets data"
+    },
+    "/spreadsheets/{spreadsheetId}/collaborators/{collabId}": {
+      "schema": { "$ref": "Collaborator" },
+      "description": "Collaborators and RBAC roles"
+    },
+    "/spreadsheets/{spreadsheetId}/auditLogs/{logId}": {
+      "schema": { "$ref": "AuditLog" },
+      "description": "Audit trail"
+    }
+  }
+}
