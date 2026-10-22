@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "spreadsheetId": "test_zdl_1792655162504",
+    "revision": 3,
+    "cellCount": 22,
+    "sha256Hash": "cba5f4c36606dee3453424871ad8c0b7dba1fa80452397d6654d4f9b4cf48578",
+    "createdAt": "2026-10-22T07:46:02.669Z",
+    "status": "VALID",
+    "sentinel": "SNAPSHOT_VALID_EOF"
+  },
+  "data": {
+    "id": "test_zdl_1792655162504",
+    "title": "Large-Scale Performance Sheet",
+    "totalRows": 100000,
+    "totalCols": 50,
+    "sheetNames": [
+      "Sheet1",
+      "Sheet2"
+    ],
+    "revision": 3,
+    "sheets": {
+      "Sheet1": {
+        "A1": {
+          "value": "CRITICAL_FINANCIAL_VALUE_9999",
+          "bold": true,
+          "updatedAt": "2026-10-22T07:46:02.511Z"
+        },
+        "B1": {
+          "value": "Category",
+          "bold": true
+        },
+        "C1": {
+          "value": "Quantity",
+          "bold": true,
+          "align": "right"
+        },
+        "D1": {
+          "value": "Unit Price",
+          "bold": true,
+          "align": "right"
+        },
+        "E1": {
+          "value": "Total Cost",
+          "bold": true,
+          "formula": "=C1*D1",
+          "align": "right"
+        },
+        "A2": {
+          "value": "POST_SNAPSHOT_WAL_VALUE",
+          "updatedAt": "2026-10-22T07:46:02.666Z"
+        },
+        "B2": {
+          "value": "Infrastructure"
+        },
+        "C2": {
+          "value": "16"
+        },
+        "D2": {
+          "value": "250"
+        },
+        "E2": {
+          "formula": "=C2*D2"
+        },
+        "A3": {
+          "value": "In-Memory Cache Cluster"
+        },
+        "B3": {
+          "value": "Database"
+        },
+        "C3": {
+          "value": "8"
+        },
+        "D3": {
+          "value": "180"
+        },
+        "E3": {
+          "formula": "=C3*D3"
+        },
+        "A4": {
+          "value": "Enterprise Virtualized Grid"
+        },
+        "B4": {
+          "value": "Software"
+        },
+        "C4": {
+          "value": "1"
+        },
+        "D4": {
+          "value": "1200"
+        },
+        "E4": {
+          "formula": "=C4*D4"
+        },
+        "A5": {
+          "value": "Total Cost Summary",
+          "bold": true
+        },
+        "E5": {
+          "formula": "=SUM(E2:E4)",
+          "bold": true
+        }
+      },
+      "Sheet2": {}
+    },
+    "updatedAt": "2026-10-22T07:46:02.669Z"
+  }
+}
+// SNAPSHOT_VALID_EOF

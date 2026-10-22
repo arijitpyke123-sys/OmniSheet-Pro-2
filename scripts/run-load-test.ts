@@ -10,7 +10,7 @@
 
 import { runAllTests } from '../src/server/loadTestRunner.ts';
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.LOAD_TEST_PORT ? parseInt(process.env.LOAD_TEST_PORT, 10) : 3000;
 
 async function main() {
   console.log('========================================================================');

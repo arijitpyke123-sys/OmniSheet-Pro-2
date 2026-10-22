@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "spreadsheetId": "test_zdl_1792655045519",
+    "revision": 2,
+    "cellCount": 22,
+    "sha256Hash": "685517910a32d8d1f7b3b33516fb0830ee6498ee161467aff21c05e49f22583d",
+    "createdAt": "2026-10-22T07:44:05.684Z",
+    "status": "VALID",
+    "sentinel": "SNAPSHOT_VALID_EOF"
+  },
+  "data": {
+    "id": "test_zdl_1792655045519",
+    "title": "Large-Scale Performance Sheet",
+    "totalRows": 100000,
+    "totalCols": 50,
+    "sheetNames": [
+      "Sheet1",
+      "Sheet2"
+    ],
+    "revision": 2,
+    "sheets": {
+      "Sheet1": {
+        "A1": {
+          "value": "CRITICAL_FINANCIAL_VALUE_9999",
+          "bold": true,
+          "updatedAt": "2026-10-22T07:44:05.529Z"
+        },
+        "B1": {
+          "value": "Category",
+          "bold": true
+        },
+        "C1": {
+          "value": "Quantity",
+          "bold": true,
+          "align": "right"
+        },
+        "D1": {
+          "value": "Unit Price",
+          "bold": true,
+          "align": "right"
+        },
+        "E1": {
+          "value": "Total Cost",
+          "bold": true,
+          "formula": "=C1*D1",
+          "align": "right"
+        },
+        "A

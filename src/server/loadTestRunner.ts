@@ -27,9 +27,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function httpGet(url: string): Promise<any> {
+function httpGet(url: string, token = 'test_token_admin_runner'): Promise<any> {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    const parsed = new URL(url);
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
@@ -39,11 +48,13 @@ function httpGet(url: string): Promise<any> {
           resolve(data);
         }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
-function httpPost(url: string, body: any): Promise<any> {
+function httpPost(url: string, body: any, token = 'test_token_admin_runner'): Promise<any> {
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify(body);
     const parsed = new URL(url);
@@ -55,6 +66,7 @@ function httpPost(url: string, body: any): Promise<any> {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(postData),
+        'Authorization': `Bearer ${token}`,
       },
     }, (res) => {
       let data = '';
@@ -83,12 +95,15 @@ class TestClient {
   public offlineQueue: any[] = [];
   public isConnected: boolean = false;
   public artificialDelayMs: number = 0;
+  public token: string;
   private wsUrl: string;
 
-  constructor(id: string, spreadsheetId: string, wsUrl: string, artificialDelayMs = 0) {
+  constructor(id: string, spreadsheetId: string, wsUrl: string, artificialDelayMs = 0, token?: string) {
     this.id = id;
     this.spreadsheetId = spreadsheetId;
-    this.wsUrl = wsUrl;
+    this.token = token || `test_token_${id}`;
+    const separator = wsUrl.includes('?') ? '&' : '?';
+    this.wsUrl = `${wsUrl}${separator}token=${this.token}`;
     this.artificialDelayMs = artificialDelayMs;
   }
 
@@ -98,6 +113,11 @@ class TestClient {
 
       this.ws.on('open', () => {
         this.isConnected = true;
+        // Authenticate with verified token
+        this.ws!.send(JSON.stringify({
+          type: 'AUTH',
+          token: this.token,
+        }));
         this.ws!.send(JSON.stringify({
           type: 'JOIN',
           spreadsheetId: this.spreadsheetId,

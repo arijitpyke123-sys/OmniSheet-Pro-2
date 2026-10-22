@@ -13,7 +13,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:simulation": "tsx scripts/run-simulation-test.ts",
-    "test:load": "tsx scripts/run-load-test.ts"
+    "test:load": "tsx scripts/run-load-test.ts",
+    "test:auth": "tsx scripts/test-auth-security.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -24,6 +25,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "firebase": "^13.0.0",
+    "firebase-admin": "^14.5.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "papaparse": "^5.7.0",

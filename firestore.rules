@@ -2,48 +2,67 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions for auth and spreadsheet permissions
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    function isOwner(resourceData) {
-      return isAuthenticated() && resourceData.ownerId == request.auth.uid;
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isOwner(spreadsheetData) {
+      return isAuthenticated() && spreadsheetData.ownerId == request.auth.uid;
     }
 
     function isCollaborator(spreadsheetData) {
       return isAuthenticated() && (
         spreadsheetData.ownerId == request.auth.uid ||
-        (spreadsheetData.collaborators is list && request.auth.uid in spreadsheetData.collaborators)
+        (spreadsheetData.collaborators is list && request.auth.uid in spreadsheetData.collaborators) ||
+        (spreadsheetData.collaborators is map && request.auth.uid in spreadsheetData.collaborators.keys())
       );
-    }
-
-    match /test/{docId} {
-      allow read, write: if true;
     }
 
     // Registered users for collaborator discovery & profile
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && request.auth.uid == userId;
+      allow write: if isUser(userId);
     }
 
     // Spreadsheets collection and all nested subcollections
     match /spreadsheets/{spreadsheetId} {
-      allow read: if isAuthenticated();
+      // Must be authenticated and either owner, collaborator, or public
+      allow read: if isAuthenticated() && (
+        resource == null ||
+        resource.data.isPublic == true ||
+        isCollaborator(resource.data)
+      );
+      
+      // Must set oneself as owner on creation
       allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
-      allow update, delete: if isAuthenticated();
+      
+      // Must be owner or editor collaborator to update
+      allow update: if isAuthenticated() && (
+        isOwner(resource.data) ||
+        isCollaborator(resource.data)
+      );
+      
+      // Only owner can delete spreadsheet
+      allow delete: if isAuthenticated() && isOwner(resource.data);
 
       match /data/{dataId} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
       }
 
       match /collaborators/{collabId} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated();
       }
 
       match /auditLogs/{logId} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+        allow update, delete: if false; // Append-only audit logs
       }
 
       match /{subcollection=**} {
@@ -51,16 +70,18 @@ service cloud.firestore {
       }
     }
 
-    // Tenant quotas and subscription plans
+    // Tenant quotas and subscription plans (read-only for authenticated users)
     match /tenants/{tenantId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
 
       match /{subcollection=**} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        allow write: if false;
       }
     }
 
-    // Global default deny for other paths
+    // Global default deny for everything else
     match /{document=**} {
       allow read, write: if false;
     }
