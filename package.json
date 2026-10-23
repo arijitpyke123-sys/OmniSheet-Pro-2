@@ -14,7 +14,8 @@
     "lint": "tsc --noEmit",
     "test:simulation": "tsx scripts/run-simulation-test.ts",
     "test:load": "tsx scripts/run-load-test.ts",
-    "test:auth": "tsx scripts/test-auth-security.ts"
+    "test:auth": "tsx scripts/test-auth-security.ts",
+    "test:offline": "tsx scripts/test-indexeddb-offline.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

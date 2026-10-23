@@ -64,6 +64,8 @@ import {
   syncUserProfile
 } from './services/firestoreService';
 import Papa from 'papaparse';
+import { indexedDBQueue } from './services/indexedDBQueue';
+import { syncManager } from './services/syncManager';
 
 export default function App() {
   const [user, setUser] = useState<any>(() => {
@@ -278,15 +280,43 @@ export default function App() {
   useEffect(() => {
     if (!user || !activeSpreadsheetId) return;
 
-    // Load initial state
+    // 1. Immediately restore local snapshot and overlay pending unconfirmed edits from IndexedDB
+    // Ensures durable offline editing: browser closure or refresh retains all unconfirmed edits!
+    const restoreOfflineState = async () => {
+      try {
+        const localSnapshot = await indexedDBQueue.loadSheetSnapshot(activeSpreadsheetId);
+        const pendingEdits = await indexedDBQueue.getPendingEdits(activeSpreadsheetId);
+
+        let initialSheets: Record<string, SheetCells> = localSnapshot?.sheets || allSheetCells;
+
+        if (pendingEdits.length > 0) {
+          initialSheets = JSON.parse(JSON.stringify(initialSheets));
+          for (const op of pendingEdits) {
+            if (!initialSheets[op.sheetName]) initialSheets[op.sheetName] = {};
+            initialSheets[op.sheetName][op.cellKey] = op.cellValue;
+          }
+        }
+
+        if (localSnapshot) {
+          if (localSnapshot.title) setTitle(localSnapshot.title);
+          if (localSnapshot.sheetNames && localSnapshot.sheetNames.length > 0) {
+            setSheets(localSnapshot.sheetNames);
+          }
+          if (localSnapshot.revision) setDocumentRevision(localSnapshot.revision);
+        }
+        setAllSheetCells(initialSheets);
+      } catch (err) {
+        console.warn('[IndexedDB] Error loading local offline snapshot:', err);
+      }
+    };
+    restoreOfflineState();
+
+    // Load initial authoritative state from Firestore / Server if online
     const loadData = async () => {
       try {
         const loaded = await loadSpreadsheetFromFirestore(activeSpreadsheetId);
         if (loaded) {
           if (loaded.title) setTitle(loaded.title);
-          if (loaded.sheets && Object.keys(loaded.sheets).length > 0) {
-            setAllSheetCells(loaded.sheets);
-          }
           if (loaded.sheetNames && loaded.sheetNames.length > 0) {
             setSheets(loaded.sheetNames);
             if (!loaded.sheetNames.includes(activeSheet)) {
@@ -297,6 +327,25 @@ export default function App() {
 
           if (loaded.collaborators && loaded.collaborators.length > 0) {
             setCollaborators(loaded.collaborators);
+          }
+
+          // 5. Reconcile pending edits with server revisions and conflicting changes
+          const pendingOps = await indexedDBQueue.getPendingEdits(activeSpreadsheetId);
+          if (pendingOps.length > 0 && loaded.sheets) {
+            const { reconciledSheets, conflicts } = indexedDBQueue.reconcilePendingEditsWithServer(
+              allSheetCells,
+              loaded.sheets,
+              pendingOps,
+              Date.now(),
+              (loaded as any).revision || documentRevision || 1
+            );
+            setAllSheetCells(reconciledSheets);
+            if (conflicts.length > 0) {
+              setPlanUpgradeToast(`Reconciled ${conflicts.length} conflict(s) with server using Last-Write-Wins timestamps.`);
+              setTimeout(() => setPlanUpgradeToast(null), 5000);
+            }
+          } else if (loaded.sheets && Object.keys(loaded.sheets).length > 0) {
+            setAllSheetCells(loaded.sheets);
           }
 
           // Determine current user's effective RBAC role
@@ -319,17 +368,54 @@ export default function App() {
           setLastSavedAt(new Date().toLocaleTimeString());
         }
       } catch (err) {
-        console.warn('Initial load from Firestore note:', err);
+        console.warn('Initial load from Firestore note (offline):', err);
+      }
+
+      // Initialize SyncManager WebSocket context & replay queue
+      try {
+        const token = user?.getIdToken ? await user.getIdToken() : undefined;
+        syncManager.setContext(activeSpreadsheetId, user.uid, token, documentRevision);
+      } catch {
+        syncManager.setContext(activeSpreadsheetId, user.uid, undefined, documentRevision);
       }
     };
     loadData();
 
+    // Remote mutations from WebSocket sync
+    const unsubscribeRemoteMutations = syncManager.subscribeRemoteMutations((sheetName, cellKey, cellValue, revision) => {
+      setAllSheetCells((prev) => {
+        const currentSheet = prev[sheetName] || {};
+        return {
+          ...prev,
+          [sheetName]: {
+            ...currentSheet,
+            [cellKey]: cellValue,
+          },
+        };
+      });
+      setDocumentRevision((prev) => Math.max(prev, revision));
+    });
+
     // Subscribe to live concurrent spreadsheet updates from other collaborators
     const unsubscribeSpreadsheet = subscribeToSpreadsheetUpdates(
       activeSpreadsheetId,
-      (remoteData) => {
+      async (remoteData) => {
         if (!isLocalMutationRef.current) {
-          setAllSheetCells(remoteData.sheets);
+          // Reconcile incoming server changes with local pending edits
+          const pending = await indexedDBQueue.getPendingEdits(activeSpreadsheetId);
+          if (pending.length > 0 && remoteData.sheets) {
+            const { reconciledSheets } = indexedDBQueue.reconcilePendingEditsWithServer(
+              allSheetCells,
+              remoteData.sheets,
+              pending,
+              Date.now(),
+              (remoteData as any).revision || documentRevision || 1
+            );
+            setAllSheetCells(reconciledSheets);
+          } else {
+            setAllSheetCells(remoteData.sheets);
+          }
+
           if (remoteData.sheetNames && remoteData.sheetNames.length > 0) {
             setSheets(remoteData.sheetNames);
           }
@@ -356,6 +442,7 @@ export default function App() {
     }, 15000);
 
     return () => {
+      unsubscribeRemoteMutations();
       unsubscribeSpreadsheet();
       unsubscribePresence();
       clearInterval(heartbeat);
@@ -444,19 +531,41 @@ export default function App() {
       return;
     }
 
+    const cellData = {
+      ...allSheetCells[activeSheet]?.[cellKey],
+      value: formula ? '' : value,
+      formula: formula,
+    };
+
+    // 1. Save edit locally into IndexedDB queue with unique opId
+    if (activeSpreadsheetId) {
+      syncManager.enqueueEdit(activeSheet, cellKey, cellData).catch((err) => {
+        console.warn('[OfflineQueue] Enqueue note:', err);
+      });
+    }
+
     const updated = {
       ...allSheetCells,
       [activeSheet]: {
         ...allSheetCells[activeSheet],
-        [cellKey]: {
-          ...allSheetCells[activeSheet]?.[cellKey],
-          value: formula ? '' : value,
-          formula: formula,
-        }
+        [cellKey]: cellData,
       }
     };
 
     setAllSheetCells(updated);
+
+    // 2. Preserve pending edits and local sheet snapshot in IndexedDB
+    if (activeSpreadsheetId) {
+      indexedDBQueue.saveSheetSnapshot({
+        spreadsheetId: activeSpreadsheetId,
+        title,
+        sheetNames: sheets,
+        sheets: updated,
+        revision: documentRevision,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     triggerFirestoreSave(title, updated, sheets);
 
     const logEntry = {
@@ -511,6 +620,21 @@ export default function App() {
       [activeSheet]: updatedCurrentSheet
     };
     setAllSheetCells(updated);
+
+    if (activeSpreadsheetId) {
+      for (const key of targets) {
+        syncManager.enqueueEdit(activeSheet, key, updatedCurrentSheet[key]).catch(() => {});
+      }
+      indexedDBQueue.saveSheetSnapshot({
+        spreadsheetId: activeSpreadsheetId,
+        title,
+        sheetNames: sheets,
+        sheets: updated,
+        revision: documentRevision,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     triggerFirestoreSave(title, updated, sheets);
   };
 
@@ -536,6 +660,21 @@ export default function App() {
       [activeSheet]: updatedCurrentSheet
     };
     setAllSheetCells(updated);
+
+    if (activeSpreadsheetId) {
+      for (const key of targets) {
+        syncManager.enqueueEdit(activeSheet, key, { value: '' }).catch(() => {});
+      }
+      indexedDBQueue.saveSheetSnapshot({
+        spreadsheetId: activeSpreadsheetId,
+        title,
+        sheetNames: sheets,
+        sheets: updated,
+        revision: documentRevision,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     triggerFirestoreSave(title, updated, sheets);
 
     const logEntry = {
@@ -600,6 +739,19 @@ export default function App() {
         },
       };
       isLocalMutationRef.current = true;
+      if (activeSpreadsheetId) {
+        for (const [key, cell] of Object.entries(optimisticCells)) {
+          syncManager.enqueueEdit(activeSheet, key, cell).catch(() => {});
+        }
+        indexedDBQueue.saveSheetSnapshot({
+          spreadsheetId: activeSpreadsheetId,
+          title,
+          sheetNames: sheets,
+          sheets: updated,
+          revision: documentRevision,
+          updatedAt: new Date().toISOString(),
+        });
+      }
       triggerFirestoreSave(title, updated, sheets);
       return updated;
     });
@@ -1506,7 +1658,7 @@ export default function App() {
         theme={theme}
       />
 
-      <OfflineIndicator />
+      <OfflineIndicator spreadsheetId={activeSpreadsheetId} />
     </div>
   );
 }

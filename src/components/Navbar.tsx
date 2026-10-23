@@ -18,9 +18,11 @@ import {
   Zap,
   Rocket,
   Sparkles,
-  Activity
+  Activity,
+  Database
 } from 'lucide-react';
 import { usePWAInstall, useOnlineStatus } from '../hooks/usePWA';
+import { useOfflineQueue } from '../hooks/useOfflineQueue';
 import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
 import { UserPresence } from '../services/firestoreService';
@@ -79,6 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const { isInstallable, isInstalled, install, isIOS } = usePWAInstall();
   const isOnline = useOnlineStatus();
+  const { pendingCount, isReplaying, forceSync } = useOfflineQueue();
   const [showIOSModal, setShowIOSModal] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const isDark = theme === 'dark';
@@ -205,12 +208,26 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
-          {!isOnline && (
+          {!isOnline ? (
             <div className="flex items-center gap-1.5 rounded-lg bg-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-500 border border-amber-500/30">
               <WifiOff className="h-3.5 w-3.5 animate-pulse" />
-              Offline
+              <span>Offline</span>
+              {pendingCount > 0 && (
+                <span className="bg-amber-500/30 text-amber-300 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+                  {pendingCount}
+                </span>
+              )}
             </div>
-          )}
+          ) : pendingCount > 0 ? (
+            <button
+              onClick={forceSync}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 px-2.5 py-1 text-xs font-medium text-amber-400 border border-amber-500/30 transition"
+              title={`${pendingCount} unconfirmed edits in IndexedDB. Click to sync immediately.`}
+            >
+              <Database className={`h-3.5 w-3.5 ${isReplaying ? 'animate-spin' : ''}`} />
+              <span>{pendingCount} pending</span>
+            </button>
+          ) : null}
 
           {/* Tenant Quotas & Subscription Plan (Netflix-style Rate Limiter) */}
           {onOpenPlanQuota && quotaStatus && (
